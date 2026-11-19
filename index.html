@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Tiny Planets · build a little paper world</title>
+<meta name="description" content="Build your own tiny papercraft planet, float it in a shared universe, and visit your friends' worlds. No sign-up." />
+<meta name="theme-color" content="#f3e9d6" />
+<meta property="og:title" content="Tiny Planets 🪐 build a little paper world" />
+<meta property="og:description" content="Everyone gets a tiny papercraft planet. Build, then fly over to visit your friends' worlds." />
+<meta property="og:image" content="/og.png" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary_large_image" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🪐</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Nunito:wght@600;800;900&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/style.css" />
+<script type="importmap">
+{ "imports": { "three": "/vendor/three.module.min.js", "three/addons/": "/vendor/addons/" } }
+</script>
+</head>
+<body>
+<div id="app"></div>
+<div id="labels"></div>
+<div id="bubble" class="bubble hidden"></div>
+
+<div id="intro">
+  <h1><span>T</span><span>i</span><span>n</span><span>y</span>&nbsp;<span>P</span><span>l</span><span>a</span><span>n</span><span>e</span><span>t</span><span>s</span></h1>
+  <p>a little paper world, just for you</p>
+</div>
+
+<header id="top" class="ui hidden">
+  <button id="nameBtn" class="tag" aria-label="Rename planet"><span id="planetName">Tiny Planet</span><small id="planetMeta"></small></button>
+</header>
+
+<nav id="side" class="ui hidden">
+  <button id="btnUniverse" class="round" aria-label="See the universe" title="See everyone's planets">🌌</button>
+  <button id="btnPostcard" class="round" aria-label="Make a postcard" title="Postcard">📮</button>
+  <button id="btnShare" class="round" aria-label="Share link" title="Share link">🔗</button>
+  <button id="btnPeek" class="round" aria-label="Peek at daytime" title="Peek at daytime">☀️</button>
+  <button id="btnWeather" class="round mine-only" aria-label="Match my real weather" title="Match my real weather">🌦️</button>
+  <button id="btnPalette" class="round mine-only" aria-label="Change ground colour" title="Ground colour">🎨</button>
+  <button id="btnMusic" class="round" aria-label="Music on or off" title="Lo-fi music">🔈</button>
+</nav>
+
+<section id="dock" class="ui hidden">
+  <div id="tools">
+    <button data-tool="look" class="chip tool" title="Just look around">✋ Look</button>
+    <button data-tool="erase" class="chip tool" title="Remove things">🧽 Remove</button>
+    <button id="btnUndo" class="chip" title="Undo">↶ Undo</button>
+  </div>
+  <div id="cats"></div>
+  <div id="items"></div>
+</section>
+
+<section id="visit" class="ui hidden">
+  <div class="visit-card">
+    <div class="visit-title">Visiting <b id="visitName"></b></div>
+    <div class="visit-row">
+      <button id="btnHeart" class="chip">❤️ <span id="heartCount">0</span></button>
+      <button id="btnHome" class="chip primary">🏠 My planet</button>
+    </div>
+  </div>
+</section>
+
+<section id="universeBar" class="ui hidden">
+  <div class="visit-card">
+    <div class="visit-title"><b id="uniCount">1</b> tiny planets floating here · tap one to fly over</div>
+    <div class="visit-row"><button id="btnHome2" class="chip primary">🏠 Back to my planet</button></div>
+  </div>
+</section>
+
+<div id="hint" class="hidden"></div>
+<div id="toast" class="hidden"></div>
+
+<div id="modal" class="hidden">
+  <div class="sheet">
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
