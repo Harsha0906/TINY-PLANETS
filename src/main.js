@@ -172,7 +172,8 @@ class Planet {
   buildDetail() {
     this.dropDetail(false);
     const out = { solid: [], glow: [] }; const m = new THREE.Matrix4();
-    for (const it of this.items) {
+    const list = this.visibleCount == null ? this.items : this.items.slice(0, this.visibleCount);
+    for (const it of list) {
       const def = ITEM_BY_ID[it[0]];
       if (def.walker || this.popping.has(it)) continue;
       itemMatrix(it, m);
@@ -205,7 +206,7 @@ class Planet {
     const have = new Set(this.walkers.map((w) => w.it));
     for (const it of want) if (!have.has(it)) this.addWalker(it[0], itemDir(it), it);
     const homes = this.items.filter((it) => ITEM_BY_ID[it[0]].home || it[0] === 'chai' || it[0] === 'temple');
-    const target = Math.min(10, (this.items.length ? 2 : 0) + homes.length);
+    const target = Math.min(10, 2 + homes.length);
     let people = this.walkers.filter((w) => !w.it);
     while (people.length < target) {
       const base = homes.length ? itemDir(homes[people.length % homes.length]) : new THREE.Vector3().randomDirection();
@@ -245,10 +246,56 @@ class Planet {
     for (const s of this.spinners) s.blades.rotation.z += dt * 1.4;
   }
   updateTime() {
-    this.hour = peek && this === focus ? 12.5 : localHour(this.tz);
+    this.hour = recording && this === recording.p ? recording.hour : cinema && this === focus ? (cinema.h0 + (now() - cinema.t0)) % 24 : peek && this === focus ? 12.5 : localHour(this.tz);
     this.L = lightState(this.hour);
     tintFor(this.L, _tint); this.mat.color.copy(_tint);
     const g = 0.72 + (1 - this.L.dl) * 0.6; this.glowMat.color.setRGB(g, g, g * (this.L.dl > 0.5 ? 0.9 : 1));
+  }
+  // ---- paper unfold: the ground starts as a flat sheet and folds itself into a globe
+  startFold(delay = 0.3, dur = 2.5) {
+    const pos = this.sphere.geometry.attributes.position; const a = pos.array; const n = pos.count;
+    const flat = new Float32Array(a.length), delayArr = new Float32Array(n), lon = new Float32Array(n);
+    const S = R * 0.44;
+    for (let t = 0; t < n; t += 3) {
+      const L = [], A = [];
+      for (let k = 0; k < 3; k++) { const i = (t + k) * 3; const x = a[i], y = a[i + 1], z = a[i + 2]; const len = Math.hypot(x, y, z) || 1; L.push(Math.atan2(x, z)); A.push(Math.asin(clamp(y / len, -1, 1))); }
+      if (Math.max(...L) - Math.min(...L) > Math.PI) for (let k = 0; k < 3; k++) if (L[k] < 0) L[k] += Math.PI * 2;
+      for (let k = 0; k < 3; k++) {
+        const v = t + k, i = v * 3; const len = Math.hypot(a[i], a[i + 1], a[i + 2]);
+        if (len > R * 1.2) { flat[i] = a[i]; flat[i + 1] = a[i + 1]; flat[i + 2] = a[i + 2]; continue; } // ring stays put
+        flat[i] = L[k] * S; flat[i + 1] = A[k] * S * 1.05; flat[i + 2] = R * 0.9;
+        lon[v] = L[k]; delayArr[v] = clamp(Math.abs(L[k]) / (Math.PI * 1.25), 0, 1);
+      }
+    }
+    this.fold = { t0: now() + delay, dur, sphere: Float32Array.from(a), flat, delay: delayArr, lon };
+    this.dropDetail(); this.spawnT = 0; this.group.scale.setScalar(1); this.sphere.frustumCulled = false;
+    this.applyFold(0, now());
+  }
+  applyFold(k, t) {
+    const f = this.fold; const a = this.sphere.geometry.attributes.position.array; const n = a.length / 3;
+    for (let v = 0; v < n; v++) {
+      const kv = clamp((k - f.delay[v] * 0.42) / 0.58, 0, 1); const e = easeIO(kv); const i = v * 3;
+      const flutter = Math.sin(f.lon[v] * 3 + t * 5) * 0.45 * (1 - e);
+      a[i] = f.flat[i] + (f.sphere[i] - f.flat[i]) * e;
+      a[i + 1] = f.flat[i + 1] + (f.sphere[i + 1] - f.flat[i + 1]) * e;
+      a[i + 2] = f.flat[i + 2] + flutter + (f.sphere[i + 2] - f.flat[i + 2]) * e;
+    }
+    this.sphere.geometry.attributes.position.needsUpdate = true;
+    this.group.rotation.y = -0.7 * (1 - easeIO(clamp(k, 0, 1)));
+  }
+  updateFold(t) {
+    const f = this.fold; const k = (t - f.t0) / f.dur;
+    if (k < 1) { this.applyFold(Math.max(0, k), t); return; }
+    this.sphere.geometry.attributes.position.array.set(f.sphere); this.sphere.geometry.attributes.position.needsUpdate = true;
+    this.sphere.frustumCulled = true; this.group.rotation.y = 0; this.fold = null;
+    this.buildDetail(); this.setWalkers(true); this.growT = t;
+    puff(this.group.position.clone().add(_v.copy(camera.position).sub(this.group.position).normalize().multiplyScalar(R)), _v.clone(), ['#fffaf0', '#f2c14e', '#ec8fa3', '#9ed9c4']);
+  }
+  updateGrow(t) { // items rise out of the ground after the fold
+    const k = (t - this.growT) / 0.9; const sc = k >= 1 ? 1 : 0.72 + 0.28 * elastic(k);
+    for (const m of [this.solid, this.glow]) if (m) m.scale.setScalar(sc);
+    for (const w of this.walkers) w.born = Math.max(w.born, this.growT);
+    if (k >= 1) this.growT = 0;
   }
   serialize() { return { id: this.id, name: this.name, palette: this.palette, data: this.items, weather: this.weather }; }
 }
@@ -566,7 +613,7 @@ function updateFly(t) {
   if (k >= 1) {
     fly = null; controls.enabled = true;
     if (introDone === false) finishIntro();
-    if (mode === 'focus') { const d = focusDist(); controls.minDistance = R * 1.5; controls.maxDistance = d * 1.9; }
+    if (mode === 'focus') { const d = focusDist(); controls.minDistance = R * 1.5; controls.maxDistance = d * 1.9; if (introDone && focus === mine && needsName()) askName(true); }
     else { controls.minDistance = 40; controls.maxDistance = 1600; }
   }
 }
@@ -585,6 +632,7 @@ function lod(force) {
   const ranked = planets.map((p) => ({ p, d: camera.position.distanceTo(p.group.position) })).sort((a, b) => a.d - b.d);
   const maxDetail = lowEnd ? 5 : 9; let built = 0;
   ranked.forEach(({ p, d }, i) => {
+    if (p.fold) return;
     const wantDetail = p === focus || p === mine || (i < maxDetail && d < 420);
     if (wantDetail && !p.detail && (built < 2 || p === focus || force)) { p.buildDetail(); built++; }
     else if (!wantDetail && p.detail && d > 520) p.dropDetail();
@@ -648,7 +696,7 @@ function hint(msg) { const h = $('#hint'); h.textContent = msg; h.classList.remo
 function hideHint() { $('#hint').classList.add('hidden'); }
 function modal(html) { $('#modalBody').innerHTML = html; $('#modal').classList.remove('hidden'); }
 function closeModal() { $('#modal').classList.add('hidden'); }
-$('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
+$('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal' && !recording) closeModal(); });
 
 $('#btnUniverse').onclick = () => { if (mode === 'universe') flyTo(mine); else if (mode === 'focus') enterUniverse(); };
 $('#btnHome').onclick = $('#btnHome2').onclick = () => flyTo(mine);
@@ -663,13 +711,35 @@ $('#btnHeart').onclick = () => {
   const wp2 = p.group.position.clone().add(_v.copy(camera.position).sub(p.group.position).normalize().multiplyScalar(R + 1));
   puff(wp2, _v.clone(), ['#ec8fa3', '#d9644a', '#ffffff', '#f3b6c4']);
 };
-$('#nameBtn').onclick = () => {
-  if (mode !== 'focus' || !focus?.mine) return;
-  modal(`<h2>Name your planet</h2><input id="nameInput" maxlength="40" value="" /><div class="row"><button class="chip" id="nameCancel">Cancel</button><button class="chip primary" id="nameOk">Save</button></div>`);
-  const inp = $('#nameInput'); inp.value = mine.name; setTimeout(() => inp.select(), 50);
-  const ok = () => { const v = inp.value.trim().slice(0, 40); if (v) { mine.name = v; if (mine.label) mine.label.firstChild.textContent = 'You · ' + v; scheduleSave(300); updateUI(); } closeModal(); };
-  $('#nameOk').onclick = ok; $('#nameCancel').onclick = closeModal; inp.onkeydown = (e) => e.key === 'Enter' && ok();
-};
+function randomName() { return NAMES_A[Math.floor(Math.random() * NAMES_A.length)] + ' ' + NAMES_B[Math.floor(Math.random() * NAMES_B.length)]; }
+function askName(first) {
+  if (!$('#modal').classList.contains('hidden')) return;
+  const hasStuff = mine.items.length > 0;
+  modal(`<h2>${first ? 'Name your tiny planet 🪐' : 'Rename your planet'}</h2>
+    ${first ? `<p class="sub">${hasStuff ? 'Keep what is here, or wipe it and build from scratch.' : 'It starts empty. Everything on it is up to you.'}</p>` : ''}
+    <div class="namerow"><input id="nameInput" maxlength="40" placeholder="My planet's name" /><button class="chip" id="nameDice" title="Random name">🎲</button></div>
+    <div class="row">${hasStuff ? '<button class="chip" id="nameFresh">🧹 Start fresh</button>' : ''}${first ? '' : '<button class="chip" id="nameCancel">Cancel</button>'}<button class="chip primary" id="nameOk">${first ? "Let's build ✨" : 'Save'}</button></div>`);
+  const inp = $('#nameInput'); inp.value = mine.name; setTimeout(() => { inp.focus(); inp.select(); }, 60);
+  $('#nameDice').onclick = () => { inp.value = randomName(); };
+  const ok = () => {
+    const v = inp.value.trim().slice(0, 40) || mine.name;
+    mine.name = v; if (mine.label) mine.label.firstChild.textContent = 'You · ' + v;
+    store.set('tp_named', true); if (me.saved || mine.items.length) scheduleSave(300); else store.set('tp_planet', mine.serialize());
+    updateUI(); closeModal();
+    if (first && !store.get('tp_built', false)) hint(mine.items.length ? 'Pick something below, then tap your planet to place it ✨' : 'Your planet is empty. Pick something below, then tap the planet ✨');
+  };
+  $('#nameOk').onclick = ok; inp.onkeydown = (e) => e.key === 'Enter' && ok();
+  if ($('#nameCancel')) $('#nameCancel').onclick = closeModal;
+  const fresh = $('#nameFresh');
+  if (fresh) fresh.onclick = () => {
+    if (!fresh.dataset.sure) { fresh.dataset.sure = 1; fresh.textContent = 'Tap again to clear everything'; return; }
+    mine.items.length = 0; undoStack.length = 0; mine.buildDetail(); mine.syncWalkers();
+    puff(mine.group.position.clone().add(new THREE.Vector3(0, R, 0)), UP.clone(), ['#fffaf0', '#c9a57a', '#f2c14e']);
+    fresh.remove(); scheduleSave(300); toast('A blank planet, all yours 🌱');
+  };
+}
+$('#nameBtn').onclick = () => { if (mode === 'focus' && focus?.mine && !recording) askName(!store.get('tp_named', false)); };
+const needsName = () => !store.get('tp_named', false);
 
 // music
 const music = new LoFi();
@@ -714,6 +784,21 @@ $('#btnShare').onclick = async () => {
 
 // postcard
 $('#btnPostcard').onclick = () => makePostcard();
+let cinema = null;
+function startCinema() {
+  closeModal(); if (mode !== 'focus' || fly) return;
+  cinema = { t0: now(), h0: focus.hour }; document.body.classList.add('cinema'); hideHint();
+  controls.autoRotate = true; controls.autoRotateSpeed = 1.1; toast('🌗 A whole day in 24 seconds · tap to stop', 2600);
+}
+function stopCinema() { cinema = null; document.body.classList.remove('cinema'); controls.autoRotate = false; focus.updateTime(); updateMeta(); }
+$('#btnCinema').onclick = () => {
+  if (mode !== 'focus') { toast('Fly to a planet first 🪐'); return; }
+  modal(`<h2>Time-lapse 🎬</h2><p class="sub">Made for Reels and Shorts.</p>
+    <div class="choices"><button class="choice" id="tlVideo"><b>🎞️ Make a 10-second video</b><span>${focus.mine ? 'Your planet' : focus.name} growing from empty, through a whole day, with music</span></button>
+    <button class="choice" id="tlLive"><b>🌗 Watch a day go by</b><span>Sun to stars in 24 seconds, no buttons on screen, perfect for screen recording</span></button></div>
+    <div class="row"><button class="chip" id="tlClose">Close</button></div>`);
+  $('#tlVideo').onclick = makeVideo; $('#tlLive').onclick = startCinema; $('#tlClose').onclick = closeModal;
+};
 async function makePostcard() {
   const p = mode === 'focus' && focus ? focus : mine;
   if (p.mine && !me.saved && p.items.length) { clearTimeout(saveTimer); savePlanet(); }
@@ -774,6 +859,84 @@ async function makePostcard() {
   if (canShareFile) $('#pcShare').onclick = async () => { try { await navigator.share({ files: [file], title: 'Tiny Planets', text: `Greetings from ${p.name} 🪐 ${p.npc ? location.origin : shareUrl(p)}` }); } catch {} };
 }
 
+// ---------------------------------------------------------------- growing time-lapse video (9:16, for Reels/Shorts)
+let recording = null;
+async function makeVideo() {
+  const p = focus;
+  if (!p || mode !== 'focus') { toast('Fly to a planet first 🪐'); return; }
+  if (!p.items.length) { closeModal(); toast('Build a few things first, then make your video 🎬'); return; }
+  const canvasProto = HTMLCanvasElement.prototype;
+  if (!window.MediaRecorder || !canvasProto.captureStream) { closeModal(); toast("This browser can't record video. Try a postcard 📮"); return; }
+  const W = 720, H = 1280;
+  const r2 = new THREE.WebGLRenderer({ antialias: true, alpha: true }); r2.setPixelRatio(1); r2.setSize(W, H, false);
+  r2.shadowMap.enabled = true; r2.shadowMap.type = THREE.PCFSoftShadowMap; r2.setClearColor(0, 0);
+  const cam2 = new THREE.PerspectiveCamera(40, W / H, 0.5, 4000);
+  const out = document.createElement('canvas'); out.width = W; out.height = H; out.className = 'rec'; const g = out.getContext('2d');
+  modal(`<h2>Recording… 🎬</h2><div id="recWrap"></div><div class="progress"><i id="recBar"></i></div><div class="row"><button class="chip" id="recCancel">Cancel</button></div>`);
+  $('#recWrap').appendChild(out);
+  try { await document.fonts.load('700 64px Caveat'); await document.fonts.load('900 20px Nunito'); } catch {}
+  const stream = out.captureStream(30);
+  if (!music.ctx) { music.muted = !musicOn; music.start(); }
+  const audio = music.recordStream(); if (audio) audio.getAudioTracks().forEach((tr) => stream.addTrack(tr));
+  const mime = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m)) || '';
+  let rec;
+  try { rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 6e6 } : {}); } catch { rec = new MediaRecorder(stream); }
+  const chunks = []; rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  const done = new Promise((res) => (recording = { p, r2, cam2, g, out, t0: now() + 0.3, dur: 10, n: p.items.length, shown: -1, lastBuild: 0, ang: 0.3, h0: 6.5, hour: 6.5, done: res, cancelled: false }));
+  $('#recCancel').onclick = () => { recording.cancelled = true; recording.done(); };
+  controls.enabled = false;
+  p.visibleCount = 0; p.buildDetail();
+  rec.start(250);
+  await done;
+  const cancelled = recording.cancelled;
+  await new Promise((res) => { rec.onstop = res; rec.stop(); });
+  stream.getVideoTracks().forEach((tr) => tr.stop());
+  recording = null; p.visibleCount = null; p.buildDetail(); p.updateTime(); controls.enabled = true;
+  r2.dispose(); r2.forceContextLoss();
+  if (cancelled) { closeModal(); return; }
+  const type = rec.mimeType || mime || 'video/webm'; const blob = new Blob(chunks, { type: type.split(';')[0] });
+  const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
+  const url = URL.createObjectURL(blob);
+  const file = new File([blob], `tiny-planet-${(p.name || 'timelapse').replace(/\W+/g, '-').toLowerCase()}.${ext}`, { type: blob.type });
+  const canShareFile = navigator.canShare && navigator.canShare({ files: [file] });
+  modal(`<h2>Your time-lapse 🎞️</h2><video src="${url}" autoplay loop playsinline controls></video>
+    <p class="sub">10 seconds, vertical, with music. Ready for Reels, Shorts and Stories.</p>
+    <div class="row"><button class="chip" id="vClose">Close</button><a class="chip" download="${file.name}" href="${url}" style="text-decoration:none">⬇️ Save</a>${canShareFile ? '<button class="chip primary" id="vShare">📤 Share</button>' : ''}</div>`);
+  $('#vClose').onclick = () => { closeModal(); URL.revokeObjectURL(url); };
+  if (canShareFile) $('#vShare').onclick = async () => { try { await navigator.share({ files: [file], title: 'Tiny Planets', text: `Watch ${p.name} grow 🪐 ${p.npc ? location.origin : shareUrl(p)}` }); } catch {} };
+}
+function wrapText(g, text, x, y, maxW) { let fs = parseInt(g.font.match(/(\d+)px/)[1], 10); while (g.measureText(text).width > maxW && fs > 20) { fs -= 4; g.font = g.font.replace(/\d+px/, fs + 'px'); } g.fillText(text, x, y); }
+function recordFrame(t) {
+  const r = recording; const W = r.out.width, H = r.out.height; const g = r.g; const p = r.p;
+  const k = clamp((t - r.t0) / r.dur, 0, 1);
+  // items appear one after another, in the order they were built
+  const want = Math.round(r.n * easeIO(clamp((k - 0.1) / 0.68, 0, 1)));
+  if (want !== r.shown && (t - r.lastBuild > 0.1 || want === r.n)) {
+    p.visibleCount = want; p.buildDetail(); r.shown = want; r.lastBuild = t;
+    const it = p.items[want - 1];
+    if (it) puff(p.group.localToWorld(itemDir(it).multiplyScalar(R + 0.3)), itemDir(it).applyQuaternion(p.group.quaternion), ['#fffaf0', '#f2c14e', '#ec8fa3', '#9ed9c4']);
+  }
+  const ang = r.ang + k * 2.2, el = 0.5 - 0.12 * Math.sin(k * Math.PI), dist = (R / 10) * 62 * (1.08 - 0.12 * easeIO(k));
+  r.cam2.position.set(Math.sin(ang) * Math.cos(el), Math.sin(el), Math.cos(ang) * Math.cos(el)).multiplyScalar(dist).add(p.group.position);
+  r.cam2.lookAt(p.group.position); r.cam2.setViewOffset(W, H, 0, Math.round(H * 0.05), W, H);
+  sunMesh.lookAt(r.cam2.position); moonMesh.lookAt(r.cam2.position);
+  r.r2.render(scene, r.cam2);
+  // compose: sky, 3D, captions
+  const grad = g.createLinearGradient(0, 0, 0, H); grad.addColorStop(0, skyTop); grad.addColorStop(1, skyBottom);
+  g.fillStyle = grad; g.fillRect(0, 0, W, H);
+  g.drawImage(r.r2.domElement, 0, 0, W, H);
+  g.textAlign = 'center'; g.shadowColor = 'rgba(40,30,60,.45)'; g.shadowBlur = 14; g.fillStyle = '#fffaf0';
+  g.font = '700 84px Caveat'; wrapText(g, p.name, W / 2, 150, W - 80);
+  g.font = '900 30px Nunito';
+  const cap = k < 0.12 ? 'Day 1 · an empty planet' : k < 0.82 ? `🌱 ${Math.max(1, r.shown)} things built` : `${r.n} things, all made of paper`;
+  g.fillText(cap, W / 2, 205);
+  g.font = '700 46px Caveat'; g.fillText(`${(p.L.dl > 0.5 ? '☀️ ' : '🌙 ')}${timeLabel(p.hour)}`, W / 2, H - 150);
+  g.font = '900 26px Nunito'; g.fillText(k > 0.82 ? `✈ come visit: ${location.host}` : '🪐 Tiny Planets', W / 2, H - 92);
+  g.shadowBlur = 0;
+  const bar = $('#recBar'); if (bar) bar.style.width = (k * 100).toFixed(1) + '%';
+  if (k >= 1 && t - r.t0 > r.dur + 0.4) r.done();
+}
+
 // ---------------------------------------------------------------- building
 let chainPrev = null;
 const raycaster = new THREE.Raycaster();
@@ -792,22 +955,35 @@ function hitPlanet(x, y) {
   const h = rayAt(x, y).intersectObjects(planets.map((p) => p.sphere), false)[0];
   return h ? h.object.userData.planet : null;
 }
+// rotation (degrees) that points an item's local +z from `from` towards `to`, for an item standing at `at`
+function headingRot(from, to, at) {
+  const fwd = to.clone().sub(from); fwd.addScaledVector(at, -fwd.dot(at)).normalize();
+  _q.setFromUnitVectors(UP, at); const f0 = new THREE.Vector3(0, 0, 1).applyQuaternion(_q), r0 = new THREE.Vector3(1, 0, 0).applyQuaternion(_q);
+  let a = Math.atan2(fwd.dot(r0), fwd.dot(f0)); if (tool === 'fence') a += Math.PI / 2;
+  return ((a * 180) / Math.PI + 360) % 360;
+}
 function placeItem(dir) {
-  if (mine.items.length >= MAX_ITEMS) { toast('Your planet is full! Remove something first'); return; }
+  if (mine.items.length >= MAX_ITEMS) { toast('Your planet is full! Remove something first'); return false; }
   const def = ITEM_BY_ID[tool];
   let rot = Math.random() * 360; let d = dir.clone();
-  if (def.chain && chainPrev && chainPrev.type === tool && chainPrev.dir.angleTo(d) < 0.32 && mine.items.includes(chainPrev.it)) {
+  if (def.chain) {
     const step = (tool === 'fence' ? 1.55 : 1.6) / R;
-    const t = d.clone().addScaledVector(chainPrev.dir, -d.dot(chainPrev.dir)); // heading from prev, tangent at prev
-    if (t.lengthSq() > 1e-6) {
-      t.normalize();
-      d = chainPrev.dir.clone().multiplyScalar(Math.cos(step)).addScaledVector(t, Math.sin(step)).normalize();
-      const fwd = d.clone().sub(chainPrev.dir); fwd.addScaledVector(d, -fwd.dot(d)).normalize();
-      _q.setFromUnitVectors(UP, d); const f0 = new THREE.Vector3(0, 0, 1).applyQuaternion(_q), r0 = new THREE.Vector3(1, 0, 0).applyQuaternion(_q);
-      let a = Math.atan2(fwd.dot(r0), fwd.dot(f0));
-      if (tool === 'fence') a += Math.PI / 2;
-      rot = ((a * 180) / Math.PI + 360) % 360;
-      if (!chainPrev.fixed) { chainPrev.it[4] = Math.round(rot); chainPrev.fixed = true; mine.popping.has(chainPrev.it) || mine.buildDetail(); }
+    // never stack two pieces on the same spot (matters when painting)
+    if (mine.items.some((o) => o[0] === tool && itemDir(o).angleTo(d) < step * 0.55)) return false;
+    let anchor = null, best = 0.45;
+    for (const o of mine.items) if (o[0] === tool) { const a = itemDir(o).angleTo(d); if (a < best) { best = a; anchor = o; } }
+    if (chainPrev && chainPrev.type === tool && mine.items.includes(chainPrev.it) && chainPrev.dir.angleTo(d) < 0.45) anchor = chainPrev.it;
+    if (anchor) {
+      const ad = itemDir(anchor);
+      const t = d.clone().addScaledVector(ad, -d.dot(ad));
+      if (t.lengthSq() > 1e-8) {
+        t.normalize();
+        d = ad.clone().multiplyScalar(Math.cos(step)).addScaledVector(t, Math.sin(step)).normalize();
+        if (mine.items.some((o) => o[0] === tool && itemDir(o).angleTo(d) < step * 0.55)) return false;
+        rot = headingRot(ad, d, d);
+        const lonely = !mine.items.some((o) => o !== anchor && o[0] === tool && itemDir(o).angleTo(ad) < step * 1.4);
+        if (lonely) { anchor[4] = Math.round(headingRot(ad, d, ad)); if (!mine.popping.has(anchor)) mine.buildDetail(); }
+      }
     }
   } else {
     // nudge away from overlapping a big item
@@ -815,7 +991,7 @@ function placeItem(dir) {
   }
   const it = toTuple(tool, d, rot);
   mine.items.push(it); undoStack.push(it); if (undoStack.length > 80) undoStack.shift();
-  if (def.chain) chainPrev = { type: tool, dir: itemDir(it), it, fixed: chainPrev?.type === tool };
+  if (def.chain) chainPrev = { type: tool, dir: itemDir(it), it };
   const wpos = mine.group.localToWorld(d.clone().multiplyScalar(R));
   const nworld = d.clone().applyQuaternion(mine.group.quaternion);
   puff(wpos, nworld, ['#fffaf0', '#f2c14e', '#ec8fa3', '#9ed9c4']);
@@ -834,6 +1010,7 @@ function placeItem(dir) {
     const lines = LINES[it[0]]; if (near && lines) say(near, lines[Math.floor(Math.random() * lines.length)]);
   }
   if (!store.get('tp_built', false)) { store.set('tp_built', true); setTimeout(() => hint('Zoom out (pinch or scroll) to see everyone\'s planets 🌌'), 1500); setTimeout(hideHint, 6500); }
+  return true;
 }
 const pops = [];
 function updatePops(t) {
@@ -881,8 +1058,29 @@ function updateGhost() {
 // pointer handling: tap vs drag
 let down = null;
 const el = renderer.domElement;
-el.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, t: now(), id: e.pointerId, multi: !!down }; });
-el.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') { lastMouse = { x: e.clientX, y: e.clientY }; updateGhost(); } });
+let painting = false;
+el.addEventListener('pointerdown', (e) => {
+  const multi = !!down || painting;
+  down = { x: e.clientX, y: e.clientY, t: now(), id: e.pointerId, multi };
+  if (multi) { if (painting) { painting = false; controls.enabled = true; } return; }
+  // roads, paths and fences: press and drag to paint them
+  if (introDone && !fly && !cinema && !recording && mode === 'focus' && focus?.mine && ITEM_BY_ID[tool]?.chain) {
+    const h = hitFocus(e.clientX, e.clientY);
+    if (h) { painting = true; controls.enabled = false; down = null; placeItem(h.dir); hideHint(); }
+  }
+});
+el.addEventListener('pointermove', (e) => {
+  if (painting) {
+    const h = hitFocus(e.clientX, e.clientY);
+    const step = (tool === 'fence' ? 1.55 : 1.6) / R;
+    for (let i = 0; h && i < 3 && chainPrev && chainPrev.dir.angleTo(h.dir) > step * 0.95; i++) if (!placeItem(h.dir)) break;
+    return;
+  }
+  if (e.pointerType === 'mouse') { lastMouse = { x: e.clientX, y: e.clientY }; updateGhost(); }
+});
+const endPaint = () => { if (painting) { painting = false; controls.enabled = true; } };
+el.addEventListener('pointerup', endPaint);
+el.addEventListener('pointercancel', endPaint);
 el.addEventListener('pointerleave', () => { lastMouse = null; updateGhost(); });
 el.addEventListener('pointerup', (e) => {
   if (!down) return; const d = down; down = null;
@@ -892,6 +1090,8 @@ el.addEventListener('pointerup', (e) => {
 el.addEventListener('pointercancel', () => (down = null));
 function onTap(x, y) {
   if (!introDone) { skipIntro(); return; }
+  if (cinema) { stopCinema(); return; }
+  if (recording) return;
   if (fly) return;
   if (mode === 'universe') { const p = hitPlanet(x, y); if (p) flyTo(p); return; }
   const h = hitFocus(x, y);
@@ -919,20 +1119,23 @@ let introDone = false; let introT0 = 0;
 function startIntro() {
   mode = 'intro'; introT0 = now();
   const target = startPlanet;
-  camera.position.set(target.group.position.x + 160, 300, target.group.position.z + 560);
-  controls.target.set(0, 0, 0); camera.lookAt(0, 0, 0);
   setFocus(target);
+  const c = target.group.position;
+  camera.position.copy(c).add(new THREE.Vector3(0.05, 0.28, 1).normalize().multiplyScalar(focusDist() * 2.3));
+  controls.target.copy(c); camera.lookAt(c);
+  target.startFold(0.35, 2.9);
   setTimeout(() => {
-    fly = { fromPos: camera.position.clone(), fromT: controls.target.clone(), toT: target.group.position.clone(), toPos: target.group.position.clone().add(new THREE.Vector3(0.1, 0.5, 1).normalize().multiplyScalar(focusDist())), t0: now(), dur: 3.6 };
+    fly = { fromPos: camera.position.clone(), fromT: controls.target.clone(), toT: c.clone(), toPos: c.clone().add(new THREE.Vector3(0.1, 0.5, 1).normalize().multiplyScalar(focusDist())), t0: now(), dur: 2.7 };
     mode = 'flyin';
-  }, 650);
-  setTimeout(() => $('#intro').classList.add('fade'), 2900);
+  }, 900);
+  setTimeout(() => $('#intro').classList.add('fade'), 2500);
 }
-function skipIntro() { if (fly) fly.t0 -= fly.dur; }
+function skipIntro() { if (fly) fly.t0 -= fly.dur; if (startPlanet.fold) startPlanet.fold.t0 -= startPlanet.fold.dur; }
 function finishIntro() {
   introDone = true; mode = 'focus'; setTimeout(() => $('#intro').remove(), 900); $('#intro').classList.add('fade');
   updateUI();
   if (!focus.mine) setTimeout(() => toast(`Welcome to ${focus.name}! Leave a ❤️, then build your own`, 3800), 400);
+  else if (needsName()) setTimeout(() => askName(true), 900);
   else if (!store.get('tp_built', false)) hint('Pick something below, then tap your planet to place it ✨');
   setTimeout(() => {
     const vis = visibleWalkers().filter((w) => w.type === 'person');
@@ -945,9 +1148,9 @@ const sharedId = new URLSearchParams(location.search).get('p');
 const local = store.get('tp_planet', null);
 mine = addPlanet({
   id: me.id, mine: true, tz: myTz,
-  name: local?.name || NAMES_A[Math.floor(Math.random() * NAMES_A.length)] + ' ' + NAMES_B[Math.floor(Math.random() * NAMES_B.length)],
+  name: local?.name || randomName(),
   palette: local?.palette ?? 0, weather: local?.weather || '',
-  data: local?.data || starterItems(parseInt(me.id.slice(0, 6), 36) || 1),
+  data: local?.data || [],
 });
 if (!local) store.set('tp_planet', mine.serialize());
 mine.spawnT = now();
@@ -971,6 +1174,7 @@ function tick() {
   requestAnimationFrame(tick);
   const t = now(); const dt = Math.min(0.05, t - last); last = t;
   if (t - timeTick > 5) { timeTick = t; planets.forEach((p) => p.updateTime()); updateMeta(); }
+  if (cinema) focus.updateTime();
   updateFly(t);
   if (!fly && controls.enabled) {
     controls.update();
@@ -980,12 +1184,14 @@ function tick() {
   for (const p of planets) {
     if (p.spawnT) { const k = (t - p.spawnT) / 0.9; const s = k <= 0 ? 0.001 : elastic(k); p.group.scale.setScalar(Math.max(0.001, s)); if (k >= 1) { p.spawnT = 0; p.group.scale.setScalar(1); } }
     if (p !== focus) p.group.rotation.y += p.spin * dt;
+    if (p.fold) p.updateFold(t); else if (p.growT) p.updateGrow(t);
     if (p.walkersOn) p.updateWalkers(dt, t);
   }
   clouds.rotation.y += dt * 0.02;
   lod(false); updatePops(t); updateBurst(dt); updateWeather(dt);
+  if (recording) recording.hour = (recording.h0 + clamp((t - recording.t0) / recording.dur, 0, 1) * 24) % 24, recording.p.updateTime();
   applySky(dt); updateSunLight(); updateLabels(t); updateBubble(t);
-  renderer.render(scene, camera);
+  if (recording) recordFrame(t); else renderer.render(scene, camera);
 }
 // detect "zooming out past the planet" intent
 let wheelOut = false;
@@ -1008,4 +1214,13 @@ addEventListener('resize', () => {
   if (mode === 'focus') controls.maxDistance = focusDist() * 1.9;
 });
 document.addEventListener('visibilitychange', () => { if (!music.ctx) return; document.hidden ? music.ctx.suspend() : musicOn && music.ctx.resume(); });
-window.__tp = { cam: () => [camera.position.toArray().map(v=>+v.toFixed(1)), controls.target.toArray()], placeAt: (type, x, y, z) => { setTool(type); placeItem(new THREE.Vector3(x, y, z).normalize()); }, planets, get focus() { return focus; }, get mode() { return mode; }, flyTo, enterUniverse, setTool, placeItem: (d) => placeItem(d), makePostcard, mine: () => mine };
+const OWN = new Set(['app', 'labels', 'bubble', 'intro', 'top', 'side', 'dock', 'visit', 'universeBar', 'hint', 'toast', 'modal', 'watermark']);
+function killBadge() {
+  for (const n of [...document.body.children]) {
+    if (OWN.has(n.id) || n.tagName === 'SCRIPT') continue;
+    const head = (n.outerHTML || '').slice(0, 600);
+    if (/netlify/i.test(head) || /netlify/i.test(n.textContent || '') || n.tagName.includes('-')) n.remove();
+  }
+}
+killBadge(); new MutationObserver(killBadge).observe(document.body, { childList: true });
+window.__tp = { makeVideo: () => makeVideo(),  cam: () => [camera.position.toArray().map(v=>+v.toFixed(1)), controls.target.toArray()], placeAt: (type, x, y, z) => { setTool(type); placeItem(new THREE.Vector3(x, y, z).normalize()); }, planets, get focus() { return focus; }, get mode() { return mode; }, flyTo, enterUniverse, setTool, placeItem: (d) => placeItem(d), makePostcard, mine: () => mine };

@@ -37,6 +37,11 @@ export class LoFi {
     this.timer = setInterval(() => this.schedule(), 60);
     this.setMuted(this.muted);
   }
+  recordStream() { // music feed for recorded videos, independent of the mute button
+    if (!this.ctx || !this.ctx.createMediaStreamDestination) return null;
+    if (!this.recDest) { this.recDest = this.ctx.createMediaStreamDestination(); const g = this.ctx.createGain(); g.gain.value = 0.6; this.bus.connect(g); g.connect(this.recDest); }
+    return this.recDest.stream;
+  }
   setMuted(m) {
     this.muted = m;
     if (!this.ctx) return;
