@@ -774,10 +774,12 @@ function updateUI() {
   document.body.classList.toggle('visiting', vis || mode === 'universe');
   $('#top').classList.toggle('hidden', !introDone);
   $('#side').classList.toggle('hidden', !introDone);
+  $('#btnMusic').classList.toggle('hidden', !introDone);
   $('#dock').classList.toggle('hidden', !(mode === 'focus' && p.mine));
   $('#visit').classList.toggle('hidden', !vis);
   $('#universeBar').classList.toggle('hidden', mode !== 'universe');
   $('#btnUniverse').classList.toggle('on', mode === 'universe');
+  $('#btnUniverse').innerHTML = mode === 'universe' ? '<i>🏠</i><span>Home</span>' : '<i>🌌</i><span>Explore</span>';
   if (mode === 'universe') { $('#planetName').textContent = 'The Paper Universe'; $('#planetMeta').textContent = `${planets.length} tiny planets`; }
   else if (p) { $('#planetName').textContent = p.name; updateMeta(); }
   if (vis) { $('#visitName').textContent = p.name; $('#heartCount').textContent = p.hearts; }
@@ -830,6 +832,7 @@ function askName(first) {
     mine.name = v; if (mine.label) mine.label.firstChild.textContent = 'You · ' + v;
     store.set('tp_named', true); if (me.saved || mine.items.length) scheduleSave(300); else store.set('tp_planet', mine.serialize());
     modalLocked = false; inp.blur(); updateUI(); closeModal(); toast(`Welcome to ${v} 🪐`);
+    if (first && !store.get('tp_tour', false)) { setTimeout(startTour, 500); return; }
     if (first && !store.get('tp_built', false)) hint(mine.items.length ? 'Pick something below, then tap your planet to place it ✨' : 'Your planet is empty. Pick something below, then tap the planet ✨');
   };
   $('#nameOk').onclick = ok; inp.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); ok(); } };
@@ -1235,11 +1238,62 @@ function startIntro() {
   setTimeout(() => $('#intro').classList.add('fade'), 2500);
 }
 function skipIntro() { if (fly) fly.t0 -= fly.dur; if (startPlanet.fold) startPlanet.fold.t0 -= startPlanet.fold.dur; }
+// ---------------------------------------------------------------- first-time tour + gentle nudges
+const TOUR = [
+  { el: '#items', t: '<b>Build</b>Pick anything here, then tap your planet to put it there 🌳' },
+  { el: '#btnUniverse', t: '<b>Explore</b>Zoom out to see everyone\'s planets and fly over to visit them 🌌' },
+  { el: '#btnShare', t: '<b>Share</b>Send your planet to friends. The link drops them right onto it 🔗' },
+  { el: '#btnCinema', t: '<b>Video</b>Make a 10-second day-to-night time-lapse for your status or reels 🎬' },
+];
+let tourI = -1;
+function startTour() {
+  if (mode !== 'focus' || !focus?.mine || recording) return;
+  hideHint(); tourI = 0; $('#coach').classList.remove('hidden'); showTourStep();
+}
+function showTourStep() {
+  const st = TOUR[tourI]; const el = $(st.el);
+  if (!el || !el.offsetParent) { nextTour(); return; }
+  const r = el.getBoundingClientRect(); const pad = 6; const vw = innerWidth, vh = innerHeight;
+  Object.assign($('#coach .spot').style, { left: r.left - pad + 'px', top: r.top - pad + 'px', width: r.width + pad * 2 + 'px', height: r.height + pad * 2 + 'px' });
+  $('#coach .ctext').innerHTML = st.t; $('#coach .cstep').textContent = `${tourI + 1} / ${TOUR.length}`;
+  $('#coachNext').textContent = tourI === TOUR.length - 1 ? "Got it ✨" : 'Next';
+  const card = $('#coach .ccard'); const cw = card.offsetWidth, ch = card.offsetHeight;
+  const below = r.top + r.height / 2 < vh / 2;
+  let top = below ? r.bottom + 16 : r.top - ch - 16;
+  let left = clamp(r.left + r.width / 2 - cw / 2, 16, vw - cw - 16);
+  if (vw > 520 && r.left > vw * 0.7) { left = r.left - cw - 20; top = r.top + r.height / 2 - ch / 2; } // side column: sit beside it
+  Object.assign(card.style, { top: clamp(top, 12, vh - ch - 12) + 'px', left: left + 'px' });
+}
+function nextTour() { tourI++; if (tourI >= TOUR.length) endTour(); else showTourStep(); }
+function endTour() {
+  tourI = -1; $('#coach').classList.add('hidden'); store.set('tp_tour', true);
+  if (!store.get('tp_built', false)) hint(mine.items.length ? 'Pick something below, then tap your planet to place it ✨' : 'Your planet is empty. Pick something below, then tap the planet ✨');
+  setTimeout(nudge, 45000);
+}
+$('#coachNext').onclick = (e) => { e.stopPropagation(); nextTour(); };
+$('#coachSkip').onclick = (e) => { e.stopPropagation(); endTour(); };
+$('#coach').onclick = () => nextTour();
+addEventListener('resize', () => { if (tourI >= 0) showTourStep(); });
+// a soft pulsing ring on the next feature you haven't tried yet
+const NUDGE = ['btnShare', 'btnUniverse', 'btnCinema', 'btnPostcard'];
+const used = new Set(store.get('tp_used', []));
+function nudge() {
+  document.querySelectorAll('.pulse').forEach((b) => b.classList.remove('pulse'));
+  if (!store.get('tp_tour', false) || tourI >= 0) return;
+  const id = NUDGE.find((n) => !used.has(n)); if (id) $('#' + id).classList.add('pulse');
+}
+for (const id of NUDGE) $('#' + id).addEventListener('click', () => {
+  if (used.has(id)) return; used.add(id); store.set('tp_used', [...used]);
+  $('#' + id).classList.remove('pulse'); setTimeout(nudge, 30000);
+});
+if (store.get('tp_tour', false)) setTimeout(nudge, 20000);
+
 function finishIntro() {
   introDone = true; mode = 'focus'; setTimeout(() => $('#intro').remove(), 900); $('#intro').classList.add('fade');
   updateUI();
   if (!focus.mine) setTimeout(() => toast(`Welcome to ${focus.name}! Leave a ❤️, then build your own`, 3800), 400);
   else if (needsName()) setTimeout(() => askName(true), 900);
+  else if (!store.get('tp_tour', false)) setTimeout(startTour, 1200);
   else if (!store.get('tp_built', false)) hint('Pick something below, then tap your planet to place it ✨');
   setTimeout(() => {
     const vis = visibleWalkers().filter((w) => w.type === 'person');

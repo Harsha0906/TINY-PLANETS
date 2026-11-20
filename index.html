@@ -45,15 +45,14 @@
   <button id="nameBtn" class="tag" aria-label="Rename planet"><span id="planetName">Tiny Planet</span><small id="planetMeta"></small></button>
 </header>
 
+<button id="btnMusic" class="round ui hidden" aria-label="Music on or off" title="Lo-fi music">🔈</button>
 <nav id="side" class="ui hidden">
-  <button id="btnUniverse" class="round" aria-label="See the universe" title="See everyone's planets">🌌</button>
-  <button id="btnPostcard" class="round" aria-label="Make a postcard" title="Postcard">📮</button>
-  <button id="btnShare" class="round" aria-label="Share link" title="Share link">🔗</button>
-  <button id="btnCinema" class="round" aria-label="Time-lapse" title="Time-lapse (great for reels)">🎬</button>
-  <button id="btnPeek" class="round" aria-label="Peek at daytime" title="Peek at daytime">☀️</button>
-  <button id="btnWeather" class="round mine-only" aria-label="Match my real weather" title="Match my real weather">🌦️</button>
-  <button id="btnPalette" class="round mine-only" aria-label="Change ground colour" title="Ground colour">🎨</button>
-  <button id="btnMusic" class="round" aria-label="Music on or off" title="Lo-fi music">🔈</button>
+  <button id="btnUniverse" class="act" title="See everyone's planets"><i>🌌</i><span>Explore</span></button>
+  <button id="btnShare" class="act hot" title="Send your planet to friends"><i>🔗</i><span>Share</span></button>
+  <button id="btnCinema" class="act" title="10-second time-lapse for reels"><i>🎬</i><span>Video</span></button>
+  <button id="btnPostcard" class="act" title="Make a postcard picture"><i>📮</i><span>Postcard</span></button>
+  <button id="btnPeek" class="act" title="Peek at daytime"><i>☀️</i><span>Daytime</span></button>
+  <button id="btnWeather" class="act mine-only" title="Match my real weather"><i>🌦️</i><span>Weather</span></button>
 </nav>
 
 <section id="dock" class="ui hidden">
@@ -61,6 +60,7 @@
     <button data-tool="look" class="chip tool" title="Just look around">✋ Look</button>
     <button data-tool="erase" class="chip tool" title="Remove things">🧽 Remove</button>
     <button id="btnUndo" class="chip" title="Undo">↶ Undo</button>
+    <button id="btnPalette" class="chip" title="Change ground colour">🎨 Ground</button>
   </div>
   <div id="cats"></div>
   <div id="items"></div>
@@ -85,6 +85,7 @@
 
 <div id="hint" class="hidden"></div>
 <div id="toast" class="hidden"></div>
+<div id="coach" class="hidden"><div class="spot"></div><div class="ccard"><div class="ctext"></div><div class="crow"><button class="chip" id="coachSkip">Skip</button><span class="cstep"></span><button class="chip primary" id="coachNext">Next</button></div></div></div>
 <div id="watermark">🪐 Tiny Planets · tiny-planets-paper.netlify.app</div>
 
 <div id="modal" class="hidden">
