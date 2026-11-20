@@ -362,7 +362,7 @@ const api = async (path, opts = {}) => {
 const CARD = 'select=id,name,tz,weather,palette,item_count,hearts,visits,updated_at';
 const FULL = CARD + ',data';
 const PAGE = 60, MAX_PLANETS = 180;
-const net = { ok: true, warned: false, poll: 45, newest: '', oldest: '', more: true };
+const net = { ok: true, warned: false, poll: 30, newest: '', oldest: '', more: true };
 let saveTimer = null, saving = false;
 function scheduleSave(delay = 1500) {
   store.set('tp_planet', mine.serialize());
@@ -409,6 +409,8 @@ function applyRow(row) {
     if (!victim) return false;
     removePlanet(victim);
   }
+  const sample = planets.find((q) => q.npc && q !== focus);
+  if (sample && planets.filter((q) => !q.npc && !q.mine).length >= 8) removePlanet(sample);
   const p = addPlanet({ ...row, data: row.data || [] }); p.needsData = !row.data; p.itemCount = row.item_count | 0; p.spawnT = now() + Math.random() * 0.6;
   return true;
 }
@@ -446,7 +448,7 @@ async function loadUniverse(first) {
   }
   try {
     const q = first || !net.newest ? `planets?${CARD}&order=updated_at.desc&limit=${PAGE}` : `planets?${CARD}&updated_at=gt.${encodeURIComponent(net.newest)}&order=updated_at.desc&limit=30`;
-    rows = await api(q); netUp(); net.poll = 45;
+    rows = await api(q); netUp(); net.poll = 30;
   } catch (e) { console.warn(e); netDown(); net.poll = Math.min(600, net.poll * 2); }
   if (first && sharedId && sharedId !== me.id && !planets.find((p) => p.id === sharedId)) {
     try { const one = await api(`planets?${FULL}&id=eq.${encodeURIComponent(sharedId)}`); if (one?.length) (rows ||= []).unshift(one[0]); } catch {}
@@ -455,7 +457,7 @@ async function loadUniverse(first) {
   for (const row of rows || []) added = applyRow(row) || added;
   if (first && rows) store.set('tp_universe', { at: Date.now(), rows: rows.slice(0, PAGE).map(({ data, ...r }) => r) });
   const real = planets.filter((p) => !p.npc && !p.mine).length;
-  if (first) for (let i = 0; i < Math.max(0, 12 - real); i++) { const p = addPlanet(npcPlanet(i)); p.spawnT = now() + 0.3 + i * 0.07; added = true; }
+  if (first) for (let i = 0; i < Math.max(0, 8 - real); i++) { const p = addPlanet(npcPlanet(i)); p.spawnT = now() + 0.3 + i * 0.07; added = true; }
   if (rows && first) net.more = rows.length >= PAGE;
   if (added || first) layout();
   return rows;
@@ -473,6 +475,9 @@ async function loadMore() {
   btn.disabled = false; btn.textContent = '✨ More planets';
 }
 function schedulePoll() { setTimeout(async () => { if (!document.hidden) await loadUniverse(false); schedulePoll(); }, net.poll * 1000); }
+// count real players' planets (yours included), not the sample planets that keep a new universe from feeling empty
+const playerCount = () => planets.filter((p) => !p.npc).length;
+function uniMeta() { const n = playerCount(), k = planets.length - n; return `${n} player planet${n === 1 ? '' : 's'}${k ? ` + ${k} sample${k === 1 ? '' : 's'}` : ''}`; }
 function layout() {
   // home planet at origin; shared planet first so it sits close by
   // each planet keeps its place in the sky once it has one, so the universe doesn't reshuffle
@@ -486,7 +491,8 @@ function layout() {
     const a = i * 2.39996 + 0.6, rad = 62 + 26 * Math.sqrt(i);
     p.group.position.set(Math.cos(a) * rad, (((i * 37) % 11) - 5) * 6, Math.sin(a) * rad);
   });
-  $('#uniCount').textContent = planets.length;
+  $('#uniCount').textContent = playerCount();
+  if (mode === 'universe') $('#planetMeta').textContent = uniMeta();
 }
 
 // ---------------------------------------------------------------- scenery: sun, moon, clouds, stars, weather
@@ -621,7 +627,7 @@ function ensureLabel(p) {
   if (p.label) return p.label;
   const el = document.createElement('div'); el.className = 'plabel' + (p.mine ? ' me' : '');
   el.innerHTML = '<span></span> <small></small>';
-  el.firstChild.textContent = p.mine ? 'You · ' + p.name : p.name;
+  el.firstChild.textContent = p.mine ? 'You · ' + p.name : p.npc ? p.name + ' (sample)' : p.name;
   labelsEl.appendChild(el); p.label = el; return el;
 }
 const _proj = new THREE.Vector3();
@@ -780,7 +786,7 @@ function updateUI() {
   $('#universeBar').classList.toggle('hidden', mode !== 'universe');
   $('#btnUniverse').classList.toggle('on', mode === 'universe');
   $('#btnUniverse').innerHTML = mode === 'universe' ? '<i>🏠</i><span>Home</span>' : '<i>🌌</i><span>Explore</span>';
-  if (mode === 'universe') { $('#planetName').textContent = 'The Paper Universe'; $('#planetMeta').textContent = `${planets.length} tiny planets`; }
+  if (mode === 'universe') { $('#planetName').textContent = 'The Paper Universe'; $('#planetMeta').textContent = uniMeta(); }
   else if (p) { $('#planetName').textContent = p.name; updateMeta(); }
   if (vis) { $('#visitName').textContent = p.name; $('#heartCount').textContent = p.hearts; }
   $('#btnPeek').classList.toggle('on', peek);
@@ -830,7 +836,7 @@ function askName(first) {
   const ok = () => {
     const v = inp.value.trim().slice(0, 40) || mine.name;
     mine.name = v; if (mine.label) mine.label.firstChild.textContent = 'You · ' + v;
-    store.set('tp_named', true); if (me.saved || mine.items.length) scheduleSave(300); else store.set('tp_planet', mine.serialize());
+    store.set('tp_named', true); scheduleSave(300);
     modalLocked = false; inp.blur(); updateUI(); closeModal(); toast(`Welcome to ${v} 🪐`);
     if (first && !store.get('tp_tour', false)) { setTimeout(startTour, 500); return; }
     if (first && !store.get('tp_built', false)) hint(mine.items.length ? 'Pick something below, then tap your planet to place it ✨' : 'Your planet is empty. Pick something below, then tap the planet ✨');
