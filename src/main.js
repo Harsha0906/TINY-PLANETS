@@ -251,42 +251,52 @@ class Planet {
     tintFor(this.L, _tint); this.mat.color.copy(_tint);
     const g = 0.72 + (1 - this.L.dl) * 0.6; this.glowMat.color.setRGB(g, g, g * (this.L.dl > 0.5 ? 0.9 : 1));
   }
-  // ---- paper unfold: the ground starts as a flat sheet and folds itself into a globe
-  startFold(delay = 0.3, dur = 2.5) {
-    const pos = this.sphere.geometry.attributes.position; const a = pos.array; const n = pos.count;
-    const flat = new Float32Array(a.length), delayArr = new Float32Array(n), lon = new Float32Array(n);
-    const S = R * 0.44;
-    for (let t = 0; t < n; t += 3) {
-      const L = [], A = [];
-      for (let k = 0; k < 3; k++) { const i = (t + k) * 3; const x = a[i], y = a[i + 1], z = a[i + 2]; const len = Math.hypot(x, y, z) || 1; L.push(Math.atan2(x, z)); A.push(Math.asin(clamp(y / len, -1, 1))); }
-      if (Math.max(...L) - Math.min(...L) > Math.PI) for (let k = 0; k < 3; k++) if (L[k] < 0) L[k] += Math.PI * 2;
-      for (let k = 0; k < 3; k++) {
-        const v = t + k, i = v * 3; const len = Math.hypot(a[i], a[i + 1], a[i + 2]);
-        if (len > R * 1.2) { flat[i] = a[i]; flat[i + 1] = a[i + 1]; flat[i + 2] = a[i + 2]; continue; } // ring stays put
-        flat[i] = L[k] * S; flat[i + 1] = A[k] * S * 1.05; flat[i + 2] = R * 0.9;
-        lon[v] = L[k]; delayArr[v] = clamp(Math.abs(L[k]) / (Math.PI * 1.25), 0, 1);
-      }
+  // ---- paper unfold: a small crumpled paper ball blossoms outward, facet by facet, into the globe
+  startFold(delay = 0.3, dur = 2.6) {
+    const pos = this.sphere.geometry.attributes.position; const a = pos.array; const nTri = pos.count / 3;
+    const r = mulberry(7 + this.palette);
+    const cen = new Float32Array(nTri * 3), start = new Float32Array(nTri * 3), axis = new Float32Array(nTri * 3), ang = new Float32Array(nTri), dl = new Float32Array(nTri);
+    const front = new THREE.Vector3(0.1, 0.5, 1).normalize(); const v = new THREE.Vector3();
+    for (let t = 0; t < nTri; t++) {
+      const i = t * 9;
+      v.set((a[i] + a[i + 3] + a[i + 6]) / 3, (a[i + 1] + a[i + 4] + a[i + 7]) / 3, (a[i + 2] + a[i + 5] + a[i + 8]) / 3);
+      cen.set([v.x, v.y, v.z], t * 3);
+      const len = v.length() || 1; const rb = R * (0.13 + r() * 0.06); // crumpled ball radius
+      start.set([(v.x / len) * rb, (v.y / len) * rb, (v.z / len) * rb], t * 3);
+      const ax = new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).normalize(); axis.set([ax.x, ax.y, ax.z], t * 3);
+      ang[t] = (0.6 + r() * 1.2) * Math.PI;
+      // blossoms from the side facing you outwards, with a little paper randomness
+      dl[t] = clamp((v.normalize().angleTo(front) / Math.PI) * 0.75 + r() * 0.25, 0, 1);
     }
-    this.fold = { t0: now() + delay, dur, sphere: Float32Array.from(a), flat, delay: delayArr, lon };
+    this.fold = { t0: now() + delay, dur, orig: Float32Array.from(a), cen, start, axis, ang, dl };
     this.dropDetail(); this.spawnT = 0; this.group.scale.setScalar(1); this.sphere.frustumCulled = false;
     this.applyFold(0, now());
   }
   applyFold(k, t) {
-    const f = this.fold; const a = this.sphere.geometry.attributes.position.array; const n = a.length / 3;
-    for (let v = 0; v < n; v++) {
-      const kv = clamp((k - f.delay[v] * 0.42) / 0.58, 0, 1); const e = easeIO(kv); const i = v * 3;
-      const flutter = Math.sin(f.lon[v] * 3 + t * 5) * 0.45 * (1 - e);
-      a[i] = f.flat[i] + (f.sphere[i] - f.flat[i]) * e;
-      a[i + 1] = f.flat[i + 1] + (f.sphere[i + 1] - f.flat[i + 1]) * e;
-      a[i + 2] = f.flat[i + 2] + flutter + (f.sphere[i + 2] - f.flat[i + 2]) * e;
+    const f = this.fold; const a = this.sphere.geometry.attributes.position.array; const nTri = a.length / 9;
+    const off = _v2, q = _q2, ax = _s;
+    const wobble = k <= 0 ? 1 + Math.sin(t * 9) * 0.06 : 1; // the ball breathes before it opens
+    for (let tr = 0; tr < nTri; tr++) {
+      const kv = clamp((k - f.dl[tr] * 0.5) / 0.5, 0, 1);
+      const e = kv < 1 ? 1 + 2.2 * Math.pow(kv - 1, 3) + 1.2 * Math.pow(kv - 1, 2) : 1; // ease-out with a soft overshoot
+      const shrink = 0.18 + 0.82 * clamp(kv * 1.3, 0, 1);
+      const c3 = tr * 3;
+      const cx = (f.start[c3] + (f.cen[c3] - f.start[c3]) * e) * wobble, cy = (f.start[c3 + 1] + (f.cen[c3 + 1] - f.start[c3 + 1]) * e) * wobble, cz = (f.start[c3 + 2] + (f.cen[c3 + 2] - f.start[c3 + 2]) * e) * wobble;
+      q.setFromAxisAngle(ax.set(f.axis[c3], f.axis[c3 + 1], f.axis[c3 + 2]), f.ang[tr] * (1 - clamp(kv * 1.15, 0, 1)));
+      for (let k3 = 0; k3 < 3; k3++) {
+        const i = tr * 9 + k3 * 3;
+        off.set(f.orig[i] - f.cen[c3], f.orig[i + 1] - f.cen[c3 + 1], f.orig[i + 2] - f.cen[c3 + 2]).multiplyScalar(shrink).applyQuaternion(q);
+        a[i] = cx + off.x; a[i + 1] = cy + off.y; a[i + 2] = cz + off.z;
+      }
     }
+    _s.set(1, 1, 1);
     this.sphere.geometry.attributes.position.needsUpdate = true;
-    this.group.rotation.y = -0.7 * (1 - easeIO(clamp(k, 0, 1)));
+    this.group.rotation.y = -1.1 * (1 - easeIO(clamp(k, 0, 1)));
   }
   updateFold(t) {
     const f = this.fold; const k = (t - f.t0) / f.dur;
     if (k < 1) { this.applyFold(Math.max(0, k), t); return; }
-    this.sphere.geometry.attributes.position.array.set(f.sphere); this.sphere.geometry.attributes.position.needsUpdate = true;
+    this.sphere.geometry.attributes.position.array.set(f.orig); this.sphere.geometry.attributes.position.needsUpdate = true;
     this.sphere.frustumCulled = true; this.group.rotation.y = 0; this.fold = null;
     this.buildDetail(); this.setWalkers(true); this.growT = t;
     puff(this.group.position.clone().add(_v.copy(camera.position).sub(this.group.position).normalize().multiplyScalar(R)), _v.clone(), ['#fffaf0', '#f2c14e', '#ec8fa3', '#9ed9c4']);
@@ -531,7 +541,7 @@ function updateLabels(t) {
   const updateText = t - labelTick > 2; if (updateText) labelTick = t;
   for (const p of planets) {
     const el = ensureLabel(p);
-    const hide = (!introDone && t - introT0 < 3.2) || (mode === 'focus' && p === focus) || p.group.scale.x < 0.3;
+    const hide = (!introDone && t - introT0 < 3.2) || ((mode === 'focus' || !introDone) && p === focus) || p.group.scale.x < 0.3;
     _proj.copy(p.group.position); _proj.y += R * 1.25;
     const dist = camera.position.distanceTo(p.group.position);
     _proj.project(camera);
@@ -696,7 +706,8 @@ function hint(msg) { const h = $('#hint'); h.textContent = msg; h.classList.remo
 function hideHint() { $('#hint').classList.add('hidden'); }
 function modal(html) { $('#modalBody').innerHTML = html; $('#modal').classList.remove('hidden'); }
 function closeModal() { $('#modal').classList.add('hidden'); }
-$('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal' && !recording) closeModal(); });
+let modalLocked = false;
+$('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal' && !recording && !modalLocked) closeModal(); });
 
 $('#btnUniverse').onclick = () => { if (mode === 'universe') flyTo(mine); else if (mode === 'focus') enterUniverse(); };
 $('#btnHome').onclick = $('#btnHome2').onclick = () => flyTo(mine);
@@ -717,18 +728,20 @@ function askName(first) {
   const hasStuff = mine.items.length > 0;
   modal(`<h2>${first ? 'Name your tiny planet 🪐' : 'Rename your planet'}</h2>
     ${first ? `<p class="sub">${hasStuff ? 'Keep what is here, or wipe it and build from scratch.' : 'It starts empty. Everything on it is up to you.'}</p>` : ''}
-    <div class="namerow"><input id="nameInput" maxlength="40" placeholder="My planet's name" /><button class="chip" id="nameDice" title="Random name">🎲</button></div>
+    <div class="namerow"><input id="nameInput" type="text" maxlength="40" placeholder="My planet's name" autocomplete="off" autocapitalize="words" enterkeyhint="done" /><button class="chip" id="nameDice" title="Random name">🎲</button></div>
     <div class="row">${hasStuff ? '<button class="chip" id="nameFresh">🧹 Start fresh</button>' : ''}${first ? '' : '<button class="chip" id="nameCancel">Cancel</button>'}<button class="chip primary" id="nameOk">${first ? "Let's build ✨" : 'Save'}</button></div>`);
-  const inp = $('#nameInput'); inp.value = mine.name; setTimeout(() => { inp.focus(); inp.select(); }, 60);
-  $('#nameDice').onclick = () => { inp.value = randomName(); };
+  const inp = $('#nameInput'); inp.value = first ? '' : mine.name; inp.placeholder = mine.name;
+  modalLocked = first; // the first-time card only closes through its button
+  if (!isTouch) setTimeout(() => { inp.focus(); inp.select(); }, 60);
+  $('#nameDice').onclick = (e) => { e.preventDefault(); inp.value = randomName(); };
   const ok = () => {
     const v = inp.value.trim().slice(0, 40) || mine.name;
     mine.name = v; if (mine.label) mine.label.firstChild.textContent = 'You · ' + v;
     store.set('tp_named', true); if (me.saved || mine.items.length) scheduleSave(300); else store.set('tp_planet', mine.serialize());
-    updateUI(); closeModal();
+    modalLocked = false; inp.blur(); updateUI(); closeModal(); toast(`Welcome to ${v} 🪐`);
     if (first && !store.get('tp_built', false)) hint(mine.items.length ? 'Pick something below, then tap your planet to place it ✨' : 'Your planet is empty. Pick something below, then tap the planet ✨');
   };
-  $('#nameOk').onclick = ok; inp.onkeydown = (e) => e.key === 'Enter' && ok();
+  $('#nameOk').onclick = ok; inp.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); ok(); } };
   if ($('#nameCancel')) $('#nameCancel').onclick = closeModal;
   const fresh = $('#nameFresh');
   if (fresh) fresh.onclick = () => {
@@ -1111,7 +1124,7 @@ function pokePerson(dir) {
 addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
   if ((e.metaKey || e.ctrlKey) && e.key === 'z') $('#btnUndo').click();
-  if (e.key === 'Escape') { closeModal(); setTool('look'); }
+  if (e.key === 'Escape' && !modalLocked) { closeModal(); setTool('look'); }
 });
 
 // ---------------------------------------------------------------- intro
@@ -1121,9 +1134,9 @@ function startIntro() {
   const target = startPlanet;
   setFocus(target);
   const c = target.group.position;
-  camera.position.copy(c).add(new THREE.Vector3(0.05, 0.28, 1).normalize().multiplyScalar(focusDist() * 2.3));
+  camera.position.copy(c).add(new THREE.Vector3(0.05, 0.3, 1).normalize().multiplyScalar(focusDist() * 1.25));
   controls.target.copy(c); camera.lookAt(c);
-  target.startFold(0.35, 2.9);
+  target.startFold(0.55, 2.6);
   setTimeout(() => {
     fly = { fromPos: camera.position.clone(), fromT: controls.target.clone(), toT: c.clone(), toPos: c.clone().add(new THREE.Vector3(0.1, 0.5, 1).normalize().multiplyScalar(focusDist())), t0: now(), dur: 2.7 };
     mode = 'flyin';
