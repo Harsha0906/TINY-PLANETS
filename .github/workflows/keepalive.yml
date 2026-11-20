@@ -1,0 +1,15 @@
+# Supabase's free tier naps after a week with no traffic. A tiny read every 3 days keeps the universe awake.
+name: Keep universe awake
+on:
+  schedule:
+    - cron: '17 6 */3 * *'
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -fsS "https://ycoxfkbgeakwxiqgrvok.supabase.co/rest/v1/planets?select=id&limit=1" \
+            -H "apikey: ${KEY}" -H "Authorization: Bearer ${KEY}" > /dev/null && echo awake
+        env:
+          KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inljb3hma2JnZWFrd3hpcWdydm9rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUxMDY2MzcsImV4cCI6MjExMDY4MjYzN30.FzgDotouST6jUngcnPn3IpTg3S6lBMXDYsI35vTWyto

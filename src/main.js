@@ -358,55 +358,131 @@ const api = async (path, opts = {}) => {
   if (!res.ok) throw new Error(await res.text());
   const t = await res.text(); return t ? JSON.parse(t) : null;
 };
-const SELECT = 'select=id,name,tz,weather,palette,data,hearts,visits,updated_at';
+// Cards are tiny (no buildings); a planet's buildings are fetched only when you get close to it.
+const CARD = 'select=id,name,tz,weather,palette,item_count,hearts,visits,updated_at';
+const FULL = CARD + ',data';
+const PAGE = 60, MAX_PLANETS = 180;
+const net = { ok: true, warned: false, poll: 45, newest: '', oldest: '', more: true };
 let saveTimer = null, saving = false;
 function scheduleSave(delay = 1500) {
   store.set('tp_planet', mine.serialize());
   clearTimeout(saveTimer); saveTimer = setTimeout(savePlanet, delay);
 }
+let saveFails = 0;
 async function savePlanet() {
   if (saving) { scheduleSave(800); return; }
   saving = true;
   try {
     await api('rpc/save_planet', { method: 'POST', body: JSON.stringify({ p_id: mine.id, p_secret: me.secret, p_name: mine.name, p_tz: myTz, p_weather: mine.weather || null, p_palette: mine.palette, p_data: mine.items }) });
     if (!me.saved) { me.saved = true; store.set('tp_me', me); }
-  } catch (e) { console.warn('save failed', e); }
+    saveFails = 0; netUp();
+  } catch (e) {
+    console.warn('save failed', e); netDown();
+    // your planet is always kept on this device; keep retrying gently in the background
+    saveFails++; clearTimeout(saveTimer); saveTimer = setTimeout(savePlanet, Math.min(300, 10 * 2 ** saveFails) * 1000);
+  }
   saving = false;
 }
+function netDown() { net.ok = false; if (!net.warned) { net.warned = true; toast('The shared universe is taking a nap 😴 Your planet is safe on this device.', 3800); } }
+function netUp() { if (!net.ok && net.warned) toast('Back online 🪐'); net.ok = true; net.warned = false; }
 const bump = (id, kind) => api('rpc/bump_planet', { method: 'POST', body: JSON.stringify({ p_id: id, p_kind: kind }) }).catch(() => {});
 
 function addPlanet(row) {
   const p = new Planet(row); planets.push(p); return p;
 }
+function applyRow(row) {
+  if (!row || row.id === me.id || !/^[a-z0-9]{6,12}$/.test(row.id)) return false;
+  if (!net.newest || row.updated_at > net.newest) net.newest = row.updated_at;
+  if (!net.oldest || row.updated_at < net.oldest) net.oldest = row.updated_at;
+  const ex = planets.find((p) => p.id === row.id);
+  if (ex) {
+    if (ex.updated === row.updated_at) return false;
+    Object.assign(ex, { name: row.name, tz: row.tz || 'UTC', weather: row.weather || '', hearts: row.hearts | 0, visits: row.visits | 0, updated: row.updated_at, itemCount: row.item_count | 0 });
+    if (ex.palette !== (row.palette | 0)) { ex.palette = row.palette | 0; ex.buildBase(); }
+    if (row.data) { ex.items = sanitize(row.data); ex.needsData = false; if (ex.detail) { ex.buildDetail(); ex.syncWalkers(); } }
+    else { ex.needsData = true; if (ex.detail) requestData(ex); }
+    if (ex.label) ex.label.firstChild.textContent = ex.name;
+    return false;
+  }
+  if (planets.length >= MAX_PLANETS) { // make room: drop a sample planet, else the oldest far-away one
+    const victim = planets.find((p) => p.npc && p !== focus) || [...planets].filter((p) => !p.mine && p !== focus).sort((a, b) => (a.updated < b.updated ? -1 : 1))[0];
+    if (!victim) return false;
+    removePlanet(victim);
+  }
+  const p = addPlanet({ ...row, data: row.data || [] }); p.needsData = !row.data; p.itemCount = row.item_count | 0; p.spawnT = now() + Math.random() * 0.6;
+  return true;
+}
+function removePlanet(p) {
+  p.dropDetail(); scene.remove(p.group); p.sphere.geometry.dispose(); p.mat.dispose(); p.glowMat.dispose();
+  p.label?.remove(); planets.splice(planets.indexOf(p), 1);
+}
+// buildings are fetched in small batches, only for planets you are near
+const dataQueue = new Set(); let dataTimer = null;
+function requestData(p) {
+  if (p.npc || p.mine || p.loadingData) return;
+  dataQueue.add(p.id); p.loadingData = true;
+  clearTimeout(dataTimer); dataTimer = setTimeout(flushData, 60);
+}
+async function flushData() {
+  const ids = [...dataQueue].slice(0, 12); ids.forEach((id) => dataQueue.delete(id));
+  if (dataQueue.size) dataTimer = setTimeout(flushData, 200);
+  try {
+    const rows = await api(`planets?select=id,data,updated_at&id=in.(${ids.join(',')})`);
+    for (const row of rows || []) {
+      const p = planets.find((q) => q.id === row.id); if (!p) continue;
+      p.items = sanitize(row.data); p.needsData = false; p.loadingData = false;
+      if (p.detail || p === focus) { p.buildDetail(); p.syncWalkers(); p.growT = now(); }
+    }
+    netUp();
+  } catch (e) { netDown(); }
+  for (const id of ids) { const p = planets.find((q) => q.id === id); if (p) p.loadingData = false; }
+}
 async function loadUniverse(first) {
-  let rows = [];
-  try { rows = await api(`planets?${SELECT}&order=updated_at.desc&limit=48`); } catch (e) { console.warn(e); }
-  if (sharedId && sharedId !== me.id && !rows.find((r) => r.id === sharedId)) {
-    try { const one = await api(`planets?${SELECT}&id=eq.${encodeURIComponent(sharedId)}`); if (one?.length) rows.unshift(one[0]); } catch {}
+  let rows = null;
+  if (first) {
+    // instant start from the last universe we saw on this device, then refresh
+    const cached = store.get('tp_universe', null);
+    if (cached?.rows?.length) for (const r of cached.rows) applyRow(r);
+  }
+  try {
+    const q = first || !net.newest ? `planets?${CARD}&order=updated_at.desc&limit=${PAGE}` : `planets?${CARD}&updated_at=gt.${encodeURIComponent(net.newest)}&order=updated_at.desc&limit=30`;
+    rows = await api(q); netUp(); net.poll = 45;
+  } catch (e) { console.warn(e); netDown(); net.poll = Math.min(600, net.poll * 2); }
+  if (first && sharedId && sharedId !== me.id && !planets.find((p) => p.id === sharedId)) {
+    try { const one = await api(`planets?${FULL}&id=eq.${encodeURIComponent(sharedId)}`); if (one?.length) (rows ||= []).unshift(one[0]); } catch {}
   }
   let added = false;
-  for (const row of rows) {
-    if (row.id === me.id) continue;
-    const ex = planets.find((p) => p.id === row.id);
-    if (ex) {
-      if (ex.updated !== row.updated_at) {
-        Object.assign(ex, { name: row.name, tz: row.tz || 'UTC', weather: row.weather || '', hearts: row.hearts, visits: row.visits, updated: row.updated_at, items: sanitize(row.data) });
-        if (ex.palette !== (row.palette | 0)) { ex.palette = row.palette | 0; ex.buildBase(); }
-        if (ex.detail) { ex.buildDetail(); ex.syncWalkers(); }
-        ex.label && (ex.label.firstChild.textContent = ex.name);
-      }
-    } else { const p = addPlanet(row); p.spawnT = now() + Math.random() * 0.6; added = true; }
-  }
+  for (const row of rows || []) added = applyRow(row) || added;
+  if (first && rows) store.set('tp_universe', { at: Date.now(), rows: rows.slice(0, PAGE).map(({ data, ...r }) => r) });
   const real = planets.filter((p) => !p.npc && !p.mine).length;
   if (first) for (let i = 0; i < Math.max(0, 12 - real); i++) { const p = addPlanet(npcPlanet(i)); p.spawnT = now() + 0.3 + i * 0.07; added = true; }
+  if (rows && first) net.more = rows.length >= PAGE;
   if (added || first) layout();
   return rows;
 }
+async function loadMore() {
+  if (!net.more || !net.oldest) { toast("You've seen every planet out there 🌌"); return; }
+  const btn = $('#btnMore'); btn.disabled = true; btn.textContent = '✨ Finding planets…';
+  try {
+    const rows = await api(`planets?${CARD}&updated_at=lt.${encodeURIComponent(net.oldest)}&order=updated_at.desc&limit=${PAGE}`);
+    let n = 0; for (const r of rows) n += applyRow(r) ? 1 : 0;
+    net.more = rows.length >= PAGE; layout();
+    toast(n ? `${n} more tiny planets drifted in ✨` : "You've seen every planet out there 🌌");
+    if (n && mode === 'universe') enterUniverse();
+  } catch { netDown(); }
+  btn.disabled = false; btn.textContent = '✨ More planets';
+}
+function schedulePoll() { setTimeout(async () => { if (!document.hidden) await loadUniverse(false); schedulePoll(); }, net.poll * 1000); }
 function layout() {
   // home planet at origin; shared planet first so it sits close by
+  // each planet keeps its place in the sky once it has one, so the universe doesn't reshuffle
   const others = planets.filter((p) => !p.mine);
+  const taken = new Set(others.filter((p) => p.slot != null).map((p) => p.slot));
+  let next = 0;
   others.sort((a, b) => (b.id === sharedId) - (a.id === sharedId) || (a.npc - b.npc));
-  others.forEach((p, i) => {
+  for (const p of others) if (p.slot == null) { while (taken.has(next)) next++; p.slot = next; taken.add(next); }
+  others.forEach((p) => {
+    const i = p.slot;
     const a = i * 2.39996 + 0.6, rad = 62 + 26 * Math.sqrt(i);
     p.group.position.set(Math.cos(a) * rad, (((i * 37) % 11) - 5) * 6, Math.sin(a) * rad);
   });
@@ -657,6 +733,7 @@ function lod(force) {
   ranked.forEach(({ p, d }, i) => {
     if (p.fold) return;
     const wantDetail = p === focus || p === mine || (i < maxDetail && d < 420);
+    if (wantDetail && p.needsData) requestData(p);
     if (wantDetail && !p.detail && (built < 2 || p === focus || force)) { p.buildDetail(); built++; }
     else if (!wantDetail && p.detail && d > 520) p.dropDetail();
     const wantWalk = p.detail && (p === focus || d < 70);
@@ -724,6 +801,7 @@ $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal' && !r
 
 $('#btnUniverse').onclick = () => { if (mode === 'universe') flyTo(mine); else if (mode === 'focus') enterUniverse(); };
 $('#btnHome').onclick = $('#btnHome2').onclick = () => flyTo(mine);
+$('#btnMore').onclick = loadMore;
 $('#btnPeek').onclick = () => { peek = !peek; focus?.updateTime(); updateUI(); toast(peek ? 'Peeking at daytime ☀️' : `Back to real time ${focus.L.dl > 0.5 ? '☀️' : '🌙'}`); };
 $('#btnPalette').onclick = () => { mine.palette = (mine.palette + 1) % PALETTES.length; mine.buildBase(); scheduleSave(); };
 $('#btnHeart').onclick = () => {
@@ -1191,7 +1269,7 @@ renderCats(); renderItems();
   history.replaceState(null, '', location.pathname);
   startIntro();
   if (store.get('tp_weather_on', false)) syncWeather(true);
-  setInterval(() => loadUniverse(false), 45000);
+  schedulePoll();
 })();
 
 // ---------------------------------------------------------------- loop
