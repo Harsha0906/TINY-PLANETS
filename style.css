@@ -137,3 +137,6 @@ netlify-badge, #netlify-badge, [class*="netlify-badge"], a[href*="netlify.com"][
 
 /* phones: keep the card above the on-screen keyboard */
 @media (max-width: 520px) { #modal { align-items: flex-start; padding-top: calc(18px + var(--safe-t)); } }
+
+/* phones: the full-screen paper grain blend costs a lot of GPU over WebGL */
+@media (pointer: coarse) { body::after { display: none; } .plabel { box-shadow: 0 2px 0 rgba(80, 55, 30, 0.14); } }

@@ -12,6 +12,7 @@ const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 const $ = (s) => document.querySelector(s);
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const lowEnd = isTouch && (navigator.hardwareConcurrency || 4) <= 4;
+const mobile = isTouch || Math.min(innerWidth, innerHeight) < 600;
 const UP = new THREE.Vector3(0, 1, 0);
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
@@ -64,12 +65,14 @@ function tintFor(L, out) { out.copy(C_NIGHT).lerp(C_DAY, L.dl).lerp(C_DUSK, L.tw
 const WEATHER_EMOJI = { rain: '🌧️', storm: '⛈️', snow: '❄️', cloud: '☁️', clear: '☀️', '': '' };
 
 // ---------------------------------------------------------------- renderer
-const renderer = new THREE.WebGLRenderer({ antialias: !lowEnd, alpha: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(devicePixelRatio || 1, isTouch ? 1.6 : 2));
+const renderer = new THREE.WebGLRenderer({ antialias: !mobile, alpha: true, powerPreference: 'high-performance', stencil: false });
+let pixelRatio = Math.min(devicePixelRatio || 1, mobile ? (lowEnd ? 1.25 : 1.5) : 2);
+renderer.setPixelRatio(pixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 renderer.setClearColor(0x000000, 0);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = mobile ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
+if (mobile) renderer.shadowMap.autoUpdate = false; // refreshed every few frames in the loop
 $('#app').appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.5, 4000);
@@ -83,7 +86,7 @@ const hemi = new THREE.HemisphereLight(0xfff4e2, 0xb6a58c, 1.55);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff0d4, 2.1);
 sun.castShadow = true;
-sun.shadow.mapSize.set(lowEnd ? 1024 : 2048, lowEnd ? 1024 : 2048);
+sun.shadow.mapSize.set(mobile ? 1024 : 2048, mobile ? 1024 : 2048);
 Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 14, bottom: -14, near: 1, far: 90 });
 sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.03; sun.shadow.radius = 4;
 scene.add(sun, sun.target);
@@ -151,7 +154,7 @@ class Planet {
   }
   buildBase() {
     if (this.sphere) { this.group.remove(this.sphere); this.sphere.geometry.dispose(); }
-    const geo = new THREE.IcosahedronGeometry(R, lowEnd ? 3 : 4);
+    const geo = new THREE.IcosahedronGeometry(R, mobile ? 3 : 4);
     const pal = PALETTES[this.palette]; const n = geo.attributes.position.count; const col = new Float32Array(n * 3); const c = new THREE.Color();
     const r = mulberry(this.palette * 97 + 3);
     for (let f = 0; f < n / 3; f++) {
@@ -173,11 +176,17 @@ class Planet {
     this.dropDetail(false);
     const out = { solid: [], glow: [] }; const m = new THREE.Matrix4();
     const list = this.visibleCount == null ? this.items : this.items.slice(0, this.visibleCount);
+    this.bake ||= new Map(); const used = new Set();
     for (const it of list) {
       const def = ITEM_BY_ID[it[0]];
       if (def.walker || this.popping.has(it)) continue;
-      itemMatrix(it, m);
-      bakeParts(def.build(mulberry(seedOf(it))), m, out);
+      let baked = this.bake.get(it);
+      if (!baked || baked.rot !== it[4]) {
+        itemMatrix(it, m); const o = bakeParts(def.build(mulberry(seedOf(it))), m);
+        baked = { rot: it[4], solid: o.solid.length ? mergeGeometries(o.solid) : null, glow: o.glow.length ? mergeGeometries(o.glow) : null };
+        this.bake.set(it, baked);
+      }
+      used.add(it); if (baked.solid) out.solid.push(baked.solid); if (baked.glow) out.glow.push(baked.glow);
       if (def.spin) {
         bladeGeo ||= mergeParts(buildPart.windmillBlades());
         const holder = new THREE.Object3D(); itemMatrix(it, holder.matrix); holder.matrixAutoUpdate = false;
@@ -187,13 +196,14 @@ class Planet {
     }
     if (out.solid.length) { this.solid = new THREE.Mesh(mergeGeometries(out.solid), this.mat); this.solid.castShadow = this.solid.receiveShadow = true; this.group.add(this.solid); }
     if (out.glow.length) { this.glow = new THREE.Mesh(mergeGeometries(out.glow), this.glowMat); this.group.add(this.glow); }
+    if (this.visibleCount == null) for (const [k, g] of this.bake) if (!used.has(k)) { g.solid?.dispose(); g.glow?.dispose(); this.bake.delete(k); }
     this.detail = true;
   }
   dropDetail(all = true) {
     for (const k of ['solid', 'glow']) if (this[k]) { this.group.remove(this[k]); this[k].geometry.dispose(); this[k] = null; }
     for (const s of this.spinners) this.group.remove(s.holder);
     this.spinners = [];
-    if (all) { this.detail = false; this.setWalkers(false); }
+    if (all) { this.detail = false; this.setWalkers(false); if (this.bake && !this.mine) { for (const g of this.bake.values()) { g.solid?.dispose(); g.glow?.dispose(); } this.bake.clear(); } }
   }
   setWalkers(on) {
     if (!on) { for (const w of this.walkers) this.group.remove(w.mesh); this.walkers = []; this.walkersOn = false; return; }
@@ -217,7 +227,7 @@ class Planet {
   }
   addWalker(type, p, it) {
     const seed = it ? seedOf(it) : Math.floor(Math.random() * 1e6);
-    const mesh = new THREE.Mesh(walkerGeo(type, seed), this.mat); mesh.castShadow = true;
+    const mesh = new THREE.Mesh(walkerGeo(type, seed), this.mat); mesh.castShadow = !mobile;
     const h = new THREE.Vector3().randomDirection(); h.addScaledVector(p, -h.dot(p)).normalize();
     const w = { type, it, mesh, p: p.clone(), h, home: p.clone(), range: type === 'person' ? 0.5 : 0.28, speed: (ITEM_BY_ID[type].walker || 0.5) * 1.4,
       turn: 0, pause: Math.random() * 2, phase: Math.random() * 6, born: now() };
@@ -268,6 +278,7 @@ class Planet {
       // blossoms from the side facing you outwards, with a little paper randomness
       dl[t] = clamp((v.normalize().angleTo(front) / Math.PI) * 0.75 + r() * 0.25, 0, 1);
     }
+    this.sphere.geometry.computeBoundingSphere(); this.sphere.geometry.computeBoundingBox(); // full-size bounds while it unfolds
     this.fold = { t0: now() + delay, dur, orig: Float32Array.from(a), cen, start, axis, ang, dl };
     this.dropDetail(); this.spawnT = 0; this.group.scale.setScalar(1); this.sphere.frustumCulled = false;
     this.applyFold(0, now());
@@ -297,6 +308,8 @@ class Planet {
     const f = this.fold; const k = (t - f.t0) / f.dur;
     if (k < 1) { this.applyFold(Math.max(0, k), t); return; }
     this.sphere.geometry.attributes.position.array.set(f.orig); this.sphere.geometry.attributes.position.needsUpdate = true;
+    // the bounding sphere was measured while the planet was a tiny paper ball: re-measure, or taps miss the planet
+    this.sphere.geometry.computeBoundingSphere(); this.sphere.geometry.computeBoundingBox();
     this.sphere.frustumCulled = true; this.group.rotation.y = 0; this.fold = null;
     this.buildDetail(); this.setWalkers(true); this.growT = t;
     puff(this.group.position.clone().add(_v.copy(camera.position).sub(this.group.position).normalize().multiplyScalar(R)), _v.clone(), ['#fffaf0', '#f2c14e', '#ec8fa3', '#9ed9c4']);
@@ -419,7 +432,7 @@ const clouds = new THREE.Group(); scene.add(clouds);
   for (let i = 0; i < 7; i++) {
     const parts = []; const n = 3 + Math.floor(r() * 2);
     for (let k = 0; k < n; k++) parts.push({ geo: new THREE.IcosahedronGeometry(0.6 + r() * 0.5, 1).scale(1, 0.6, 0.8).translate((k - n / 2) * 0.9, r() * 0.3, r() * 0.4), color: '#ffffff' });
-    const m = new THREE.Mesh(mergeParts(parts), cloudMat); m.castShadow = true;
+    const m = new THREE.Mesh(mergeParts(parts), cloudMat); m.castShadow = !mobile;
     const d = new THREE.Vector3(r() - 0.5, r() * 0.8 - 0.1, r() - 0.5).normalize();
     m.position.copy(d).multiplyScalar(R + 4.5 + r() * 2); m.quaternion.setFromUnitVectors(UP, d);
     m.userData.extra = i >= 4; clouds.add(m);
@@ -434,7 +447,7 @@ const stars = new THREE.InstancedMesh(starGeo, starMat, 320);
   stars.frustumCulled = false; scene.add(stars);
 }
 // weather particles: paper strips (rain) and paper confetti (snow)
-const WN = lowEnd ? 160 : 280;
+const WN = mobile ? 140 : 280;
 const weatherMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.9 }), WN);
 weatherMesh.frustumCulled = false; weatherMesh.visible = false; scene.add(weatherMesh);
 const wp = Array.from({ length: WN }, () => ({ d: new THREE.Vector3().randomDirection(), r: R + 2 + Math.random() * 9, spin: Math.random() * 6, v: 0.8 + Math.random() * 0.5 }));
@@ -640,7 +653,7 @@ let lodT = 0;
 function lod(force) {
   const t = now(); if (!force && t - lodT < 0.5) return; lodT = t;
   const ranked = planets.map((p) => ({ p, d: camera.position.distanceTo(p.group.position) })).sort((a, b) => a.d - b.d);
-  const maxDetail = lowEnd ? 5 : 9; let built = 0;
+  const maxDetail = mobile ? 4 : 9; let built = 0;
   ranked.forEach(({ p, d }, i) => {
     if (p.fold) return;
     const wantDetail = p === focus || p === mine || (i < maxDetail && d < 420);
@@ -668,7 +681,7 @@ function renderItems() {
   for (const it of ITEMS.filter((i) => i.cat === cat)) {
     const b = document.createElement('button'); b.className = 'item' + (tool === it.id ? ' on' : '');
     b.innerHTML = `<span class="e">${it.emoji}</span><span class="n">${it.name}</span>`;
-    b.onclick = () => { setTool(tool === it.id ? 'look' : it.id); };
+    b.onclick = () => { setTool(it.id); };
     itemsEl.appendChild(b);
   }
   document.querySelectorAll('.tool').forEach((b) => b.classList.toggle('on', b.dataset.tool === tool));
@@ -1074,7 +1087,7 @@ const el = renderer.domElement;
 let painting = false;
 el.addEventListener('pointerdown', (e) => {
   const multi = !!down || painting;
-  down = { x: e.clientX, y: e.clientY, t: now(), id: e.pointerId, multi };
+  down = { x: e.clientX, y: e.clientY, t: now(), id: e.pointerId, multi, hit: !multi && introDone && mode === 'focus' ? hitFocus(e.clientX, e.clientY) : null };
   if (multi) { if (painting) { painting = false; controls.enabled = true; } return; }
   // roads, paths and fences: press and drag to paint them
   if (introDone && !fly && !cinema && !recording && mode === 'focus' && focus?.mine && ITEM_BY_ID[tool]?.chain) {
@@ -1097,17 +1110,17 @@ el.addEventListener('pointercancel', endPaint);
 el.addEventListener('pointerleave', () => { lastMouse = null; updateGhost(); });
 el.addEventListener('pointerup', (e) => {
   if (!down) return; const d = down; down = null;
-  if (d.multi || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 9 || now() - d.t > 0.45) return;
-  onTap(e.clientX, e.clientY);
+  if (d.multi || Math.hypot(e.clientX - d.x, e.clientY - d.y) > (e.pointerType === 'mouse' ? 8 : 16) || now() - d.t > 0.6) return;
+  onTap(d.x, d.y, d.hit);
 });
 el.addEventListener('pointercancel', () => (down = null));
-function onTap(x, y) {
+function onTap(x, y, pre) {
   if (!introDone) { skipIntro(); return; }
   if (cinema) { stopCinema(); return; }
   if (recording) return;
   if (fly) return;
   if (mode === 'universe') { const p = hitPlanet(x, y); if (p) flyTo(p); return; }
-  const h = hitFocus(x, y);
+  const h = pre || hitFocus(x, y);
   if (h && focus.mine) {
     if (tool === 'erase') eraseAt(h.dir);
     else if (ITEM_BY_ID[tool]) { placeItem(h.dir); hideHint(); }
@@ -1182,10 +1195,26 @@ renderCats(); renderItems();
 })();
 
 // ---------------------------------------------------------------- loop
-let last = now(), timeTick = 0;
+let last = now(), timeTick = 0, frameNo = 0;
+const perf = { n: 0, acc: 0, level: 0 };
+function watchPerf(dt) {
+  if (dt > 0.5) return; // tab switch etc.
+  perf.acc += dt; perf.n++;
+  if (perf.n < 120) return;
+  const fps = perf.n / perf.acc; perf.n = 0; perf.acc = 0;
+  if (fps < 40 && perf.level < 3) {
+    perf.level++;
+    if (perf.level === 1) { pixelRatio = Math.max(1, pixelRatio - 0.25); renderer.setPixelRatio(pixelRatio); }
+    if (perf.level === 2) { pixelRatio = 1; renderer.setPixelRatio(1); sun.shadow.mapSize.set(512, 512); sun.shadow.map?.dispose(); sun.shadow.map = null; }
+    if (perf.level === 3) { sun.castShadow = false; clouds.visible = false; }
+  }
+}
 function tick() {
   requestAnimationFrame(tick);
-  const t = now(); const dt = Math.min(0.05, t - last); last = t;
+  const t = now(); const rawDt = t - last; const dt = Math.min(0.05, rawDt); last = t;
+  frameNo++;
+  if (mobile && (frameNo % 3 === 0 || fly)) renderer.shadowMap.needsUpdate = true;
+  if (introDone && !recording && !document.hidden) watchPerf(rawDt);
   if (t - timeTick > 5) { timeTick = t; planets.forEach((p) => p.updateTime()); updateMeta(); }
   if (cinema) focus.updateTime();
   updateFly(t);
@@ -1236,4 +1265,4 @@ function killBadge() {
   }
 }
 killBadge(); new MutationObserver(killBadge).observe(document.body, { childList: true });
-window.__tp = { makeVideo: () => makeVideo(),  cam: () => [camera.position.toArray().map(v=>+v.toFixed(1)), controls.target.toArray()], placeAt: (type, x, y, z) => { setTool(type); placeItem(new THREE.Vector3(x, y, z).normalize()); }, planets, get focus() { return focus; }, get mode() { return mode; }, flyTo, enterUniverse, setTool, placeItem: (d) => placeItem(d), makePostcard, mine: () => mine };
+window.__tp = { dbg: () => { const s = mine.sphere; const g = s.geometry; return { bs: g.boundingSphere && g.boundingSphere.radius, a0: Array.from(g.attributes.position.array.slice(0, 3)), solid: !!mine.solid, gpos: mine.group.position.toArray(), scale: mine.group.scale.x, cam: camera.position.toArray(), focusIsMine: focus === mine }; }, hit: (x, y) => { const h = hitFocus(x, y); return h && h.dir.toArray(); }, st: () => ({ tool, introDone, fly: !!fly, cinema: !!cinema, rec: !!recording, down, painting }), project: (it) => { const v = mine.group.localToWorld(itemDir(it).multiplyScalar(R)); v.project(camera); return [Math.round((v.x + 1) / 2 * innerWidth), Math.round((1 - v.y) / 2 * innerHeight)]; }, perf, makeVideo: () => makeVideo(),  cam: () => [camera.position.toArray().map(v=>+v.toFixed(1)), controls.target.toArray()], placeAt: (type, x, y, z) => { setTool(type); placeItem(new THREE.Vector3(x, y, z).normalize()); }, planets, get focus() { return focus; }, get mode() { return mode; }, flyTo, enterUniverse, setTool, placeItem: (d) => placeItem(d), makePostcard, mine: () => mine };
