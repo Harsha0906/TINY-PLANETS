@@ -15,7 +15,7 @@ const lowEnd = isTouch && (navigator.hardwareConcurrency || 4) <= 4;
 const mobile = isTouch || Math.min(innerWidth, innerHeight) < 600;
 const UP = new THREE.Vector3(0, 1, 0);
 // creator credit: one place to change the name or link
-const CREATOR = { name: 'Harsha', url: '' };
+const CREATOR = { name: 'Harsha', url: 'https://www.linkedin.com/in/harshavardhan-s-440725278/' };
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const easeIO = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
@@ -966,7 +966,6 @@ async function makePostcard() {
   g.fillText(meta, 80, 1360);
   g.font = '900 24px Nunito'; g.fillStyle = '#f39237';
   g.fillText(`✈ visit: ${location.host}${p.npc || mode === 'universe' ? '' : '/?p=' + p.id}`, 80, 1420);
-  g.font = '700 34px Caveat'; g.fillStyle = '#a3967f'; g.textAlign = 'right'; g.fillText(`Tiny Planets by ${CREATOR.name}`, W - 80, 1420); g.textAlign = 'left';
   const url = c.toDataURL('image/png');
   const blob = await new Promise((res) => c.toBlob(res, 'image/png'));
   const file = new File([blob], `tiny-planet-${(p.name || 'postcard').replace(/\W+/g, '-').toLowerCase()}.png`, { type: 'image/png' });
@@ -1049,7 +1048,6 @@ function recordFrame(t) {
   g.fillText(cap, W / 2, 205);
   g.font = '700 46px Caveat'; g.fillText(`${(p.L.dl > 0.5 ? '☀️ ' : '🌙 ')}${timeLabel(p.hour)}`, W / 2, H - 150);
   g.font = '900 26px Nunito'; g.fillText(k > 0.82 ? `✈ come visit: ${location.host}` : '🪐 Tiny Planets', W / 2, H - 92);
-  g.font = '700 30px Caveat'; g.globalAlpha = 0.85; g.fillText(`Tiny Planets by ${CREATOR.name}`, W / 2, H - 48); g.globalAlpha = 1;
   g.shadowBlur = 0;
   const bar = $('#recBar'); if (bar) bar.style.width = (k * 100).toFixed(1) + '%';
   if (k >= 1 && t - r.t0 > r.dur + 0.4) r.done();
